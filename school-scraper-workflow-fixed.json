@@ -1,0 +1,487 @@
+{
+  "name": "School Scraper - n8n + Apify Integration",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "school-scraper-apify",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook - Start School Scraping",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [250, 300],
+      "webhookId": "school-scraper-apify-webhook",
+      "notes": "Trigger met: {\"url\": \"https://school.nl\", \"schoolNaam\": \"Naam School\"}"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Valideer input en bereid Apify calls voor\nconst input = $input.first().json;\n\nif (!input.url || !input.schoolNaam) {\n  throw new Error('Vereist: { \"url\": \"https://school.nl\", \"schoolNaam\": \"School Naam\" }');\n}\n\n// Normaliseer URL\nlet schoolUrl = input.url.trim();\nif (!schoolUrl.startsWith('http')) {\n  schoolUrl = 'https://' + schoolUrl;\n}\n\n// Parse domain voor scraping scope\nconst urlObj = new URL(schoolUrl);\nconst domain = urlObj.hostname;\n\n// Initialiseer result tracking\nconst trackingData = {\n  schoolNaam: input.schoolNaam,\n  schoolUrl: schoolUrl,\n  domain: domain,\n  timestamp: new Date().toISOString(),\n  apifyToken: $env.APIFY_TOKEN || 'YOUR_APIFY_TOKEN_HERE',\n  results: {\n    websiteContent: null,\n    contactInfo: null,\n    pdfAnalysis: null\n  },\n  errors: []\n};\n\n// Apify actor configuraties\nconst websiteContentConfig = {\n  startUrls: [{ url: schoolUrl }],\n  crawlerType: \"playwright:firefox\",\n  maxCrawlPages: 30,\n  saveFiles: true,\n  saveMarkdown: true,\n  saveHtml: false,\n  htmlTransformer: \"readableText\",\n  removeElementsCssSelector: \"nav, footer, .cookie-banner, .modal, #cookie-consent\",\n  includeUrlGlobs: [`https://${domain}/**`],\n  excludeUrlGlobs: [\n    \"*/agenda/*\",\n    \"*/calendar/*\",\n    \"*/nieuws/*\",\n    \"*/blog/*\"\n  ],\n  maxCrawlDepth: 3,\n  proxyConfiguration: {\n    useApifyProxy: true\n  }\n};\n\nconst contactInfoConfig = {\n  startUrls: [\n    { url: schoolUrl },\n    { url: `${schoolUrl}/contact` },\n    { url: `${schoolUrl}/team` },\n    { url: `${schoolUrl}/organisatie` },\n    { url: `${schoolUrl}/over-ons` }\n  ].filter(item => item.url),\n  maxDepth: 2,\n  sameDomain: true,\n  considerChildFrames: false,\n  maxRequestsPerStartUrl: 10,\n  useBrowser: true,\n  proxyConfig: {\n    useApifyProxy: true\n  }\n};\n\nreturn {\n  trackingData,\n  websiteContentConfig,\n  contactInfoConfig\n};"
+      },
+      "id": "prepare-configs",
+      "name": "Voorbereid Apify Configuraties",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apify.com/v2/acts/apify~website-content-crawler/runs?waitForFinish=120",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.trackingData.apifyToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.websiteContentConfig) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "apify-website-crawler",
+      "name": "Apify: Website Content Crawler",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [650, 200],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apify.com/v2/acts/vdrmota~contact-info-scraper/runs?waitForFinish=60",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.trackingData.apifyToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.contactInfoConfig) }}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "apify-contact-scraper",
+      "name": "Apify: Contact Info Scraper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [650, 400],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verwerk Website Content Crawler resultaten\nconst response = $json;\nconst trackingData = $input.all()[0].json.trackingData;\n\nif (response.error) {\n  trackingData.errors.push({\n    actor: 'website-content-crawler',\n    error: response.error.message || 'Unknown error'\n  });\n  return trackingData;\n}\n\n// Haal dataset items op\nconst datasetId = response.data?.defaultDatasetId;\nif (!datasetId) {\n  trackingData.errors.push({\n    actor: 'website-content-crawler',\n    error: 'No dataset ID returned'\n  });\n  return trackingData;\n}\n\ntrackingData.websiteDatasetId = datasetId;\ntrackingData.websiteRunId = response.data?.id;\n\nreturn trackingData;"
+      },
+      "id": "process-website-response",
+      "name": "Verwerk Website Crawler Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verwerk Contact Info Scraper resultaten\nconst response = $json;\nconst trackingData = $input.all()[0].json.trackingData;\n\nif (response.error) {\n  trackingData.errors.push({\n    actor: 'contact-info-scraper',\n    error: response.error.message || 'Unknown error'\n  });\n  return trackingData;\n}\n\n// Haal dataset ID op\nconst datasetId = response.data?.defaultDatasetId;\nif (!datasetId) {\n  trackingData.errors.push({\n    actor: 'contact-info-scraper',\n    error: 'No dataset ID returned'\n  });\n  return trackingData;\n}\n\ntrackingData.contactDatasetId = datasetId;\ntrackingData.contactRunId = response.data?.id;\n\nreturn trackingData;"
+      },
+      "id": "process-contact-response",
+      "name": "Verwerk Contact Scraper Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 400]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "multiplex",
+        "options": {}
+      },
+      "id": "merge-datasets",
+      "name": "Merge Dataset Info",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.apify.com/v2/datasets/{{ $json.trackingData.websiteDatasetId }}/items?limit=100",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.trackingData.apifyToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-website-data",
+      "name": "Haal Website Content Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1250, 200],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "=https://api.apify.com/v2/datasets/{{ $json.trackingData.contactDatasetId }}/items?limit=100",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.trackingData.apifyToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-contact-data",
+      "name": "Haal Contact Info Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1250, 400],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Analyseer en combineer alle scraping resultaten\nconst websiteData = $input.all()[0].json;\nconst contactData = $input.all()[1].json;\nconst trackingData = $input.all()[0].json.trackingData || $input.all()[1].json.trackingData;\n\n// Initialiseer resultaat structuur\nconst results = {\n  school: {\n    naam: trackingData.schoolNaam,\n    url: trackingData.schoolUrl,\n    domain: trackingData.domain,\n    timestamp: trackingData.timestamp\n  },\n  contactpersonen: [],\n  contactgegevens: {\n    emails: new Set(),\n    telefoons: new Set()\n  },\n  systemen: {\n    leerlingvolgsysteem: null,\n    administratiesysteem: null\n  },\n  documenten: [],\n  belangrijkeContent: [],\n  stats: {\n    paginasGescraped: 0,\n    contactenGevonden: 0,\n    pdfGevonden: 0\n  },\n  errors: trackingData.errors || []\n};\n\n// Verwerk Website Content data\nif (websiteData && Array.isArray(websiteData)) {\n  websiteData.forEach(page => {\n    results.stats.paginasGescraped++;\n    \n    // Zoek naar systemen in content\n    const content = (page.text || page.markdown || '').toLowerCase();\n    \n    // Leerlingvolgsysteem detectie\n    const lvsPatterns = [\n      { pattern: /parnassys/i, name: 'Parnassys' },\n      { pattern: /esis/i, name: 'ESIS' },\n      { pattern: /dotcom/i, name: 'DotCom' },\n      { pattern: /cito\\s*lovs/i, name: 'CITO LOVS' },\n      { pattern: /boom\\s*lovs/i, name: 'BOOM LOVS' },\n      { pattern: /diataal/i, name: 'Diataal' }\n    ];\n    \n    lvsPatterns.forEach(lvs => {\n      if (lvs.pattern.test(content) && !results.systemen.leerlingvolgsysteem) {\n        results.systemen.leerlingvolgsysteem = lvs.name;\n      }\n    });\n    \n    // Administratiesysteem detectie\n    const adminPatterns = [\n      { pattern: /magister/i, name: 'Magister' },\n      { pattern: /som\\s*today/i, name: 'SOMtoday' },\n      { pattern: /zermelo/i, name: 'Zermelo' },\n      { pattern: /itslearning/i, name: 'ItsLearning' },\n      { pattern: /google\\s*workspace/i, name: 'Google Workspace' },\n      { pattern: /microsoft\\s*365/i, name: 'Microsoft 365' }\n    ];\n    \n    adminPatterns.forEach(admin => {\n      if (admin.pattern.test(content) && !results.systemen.administratiesysteem) {\n        results.systemen.administratiesysteem = admin.name;\n      }\n    });\n    \n    // Extract belangrijke content (visie/missie)\n    const visieMatch = content.match(/visie[:\\s]+([^.\\n]{20,300})/i);\n    if (visieMatch) {\n      results.belangrijkeContent.push({\n        type: 'Visie',\n        content: visieMatch[1].trim(),\n        url: page.url\n      });\n    }\n    \n    const missieMatch = content.match(/missie[:\\s]+([^.\\n]{20,300})/i);\n    if (missieMatch) {\n      results.belangrijkeContent.push({\n        type: 'Missie',\n        content: missieMatch[1].trim(),\n        url: page.url\n      });\n    }\n    \n    // Check voor PDF documenten\n    if (page.files && Array.isArray(page.files)) {\n      page.files.forEach(file => {\n        if (file.url && file.url.toLowerCase().endsWith('.pdf')) {\n          results.documenten.push({\n            naam: file.filename || file.url.split('/').pop(),\n            url: file.url,\n            gevondenOp: page.url\n          });\n          results.stats.pdfGevonden++;\n        }\n      });\n    }\n  });\n}\n\n// Verwerk Contact Info data\nif (contactData && Array.isArray(contactData)) {\n  contactData.forEach(page => {\n    // Emails\n    if (page.emails && Array.isArray(page.emails)) {\n      page.emails.forEach(email => {\n        results.contactgegevens.emails.add(email);\n        results.stats.contactenGevonden++;\n      });\n    }\n    \n    // Telefoons\n    if (page.phones && Array.isArray(page.phones)) {\n      page.phones.forEach(phone => {\n        results.contactgegevens.telefoons.add(phone);\n        results.stats.contactenGevonden++;\n      });\n    }\n    \n    // Uncertain phones\n    if (page.phonesUncertain && Array.isArray(page.phonesUncertain)) {\n      page.phonesUncertain.forEach(phone => {\n        results.contactgegevens.telefoons.add(phone + ' (onzeker)');\n      });\n    }\n    \n    // LinkedIn profielen als contactpersonen\n    if (page.linkedIns && Array.isArray(page.linkedIns)) {\n      page.linkedIns.forEach(linkedin => {\n        const nameMatch = linkedin.match(/linkedin\\.com\\/in\\/([^/]+)/i);\n        if (nameMatch) {\n          results.contactpersonen.push({\n            naam: nameMatch[1].replace(/-/g, ' '),\n            linkedIn: linkedin,\n            gevondenOp: page.url\n          });\n        }\n      });\n    }\n  });\n}\n\n// Converteer Sets naar Arrays\nresults.contactgegevens.emails = Array.from(results.contactgegevens.emails);\nresults.contactgegevens.telefoons = Array.from(results.contactgegevens.telefoons);\n\n// Bereken kwaliteitsscore\nresults.kwaliteitsscore = {\n  totaal: 0,\n  details: {\n    websiteGescraped: results.stats.paginasGescraped > 0,\n    contactenGevonden: results.stats.contactenGevonden > 0,\n    systeemInfoGevonden: !!(results.systemen.leerlingvolgsysteem || results.systemen.administratiesysteem),\n    documentenGevonden: results.stats.pdfGevonden > 0\n  }\n};\n\nresults.kwaliteitsscore.totaal = Object.values(results.kwaliteitsscore.details)\n  .filter(v => v).length * 25;\n\nreturn results;"
+      },
+      "id": "analyze-all-data",
+      "name": "Analyseer Alle Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check of er PDFs gevonden zijn voor verdere analyse\nconst results = $input.first().json;\n\nif (results.documenten.length === 0) {\n  return {\n    ...results,\n    pdfAnalysis: {\n      status: 'Geen PDFs gevonden',\n      documenten: []\n    }\n  };\n}\n\n// Filter relevante PDFs\nconst relevantePdfPatronen = [\n  /schoolgids/i,\n  /schoolplan/i,\n  /informatiegids/i,\n  /jaarplan/i,\n  /jaarverslag/i,\n  /beleidsplan/i,\n  /onderwijsplan/i,\n  /visie.*document/i\n];\n\nconst relevantePdfs = results.documenten.filter(doc => {\n  return relevantePdfPatronen.some(pattern => pattern.test(doc.naam));\n});\n\nif (relevantePdfs.length === 0) {\n  return {\n    ...results,\n    pdfAnalysis: {\n      status: 'Geen relevante PDFs gevonden',\n      documenten: results.documenten\n    }\n  };\n}\n\n// Prepareer PDF URLs voor Apify PDF Text Extractor\nconst pdfUrls = relevantePdfs.slice(0, 5).map(doc => doc.url); // Max 5 PDFs\n\nreturn {\n  ...results,\n  pdfUrls: pdfUrls,\n  pdfConfig: {\n    urls: pdfUrls,\n    performChunking: true,\n    chunkSize: 2000,\n    chunkOverlap: 200\n  }\n};"
+      },
+      "id": "prepare-pdf-analysis",
+      "name": "Prepareer PDF Analyse",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1650, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.pdfUrls }}",
+              "operation": "notEmpty"
+            }
+          ]
+        }
+      },
+      "id": "if-pdfs-found",
+      "name": "IF PDFs Gevonden",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1850, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apify.com/v2/acts/jirimoravcik~pdf-text-extractor/runs?waitForFinish=60",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.trackingData?.apifyToken || $env.APIFY_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.pdfConfig) }}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "apify-pdf-extractor",
+      "name": "Apify: PDF Text Extractor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2050, 200],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.apify.com/v2/datasets/{{ $json.data.defaultDatasetId }}/items",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $input.first().json.trackingData?.apifyToken || $env.APIFY_TOKEN }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-pdf-data",
+      "name": "Haal PDF Text Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2250, 200],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Analyseer PDF content met AI-achtige extractie\nconst pdfData = $json;\nconst originalResults = $input.all()[0].json;\n\nif (!pdfData || !Array.isArray(pdfData)) {\n  return {\n    ...originalResults,\n    pdfAnalysis: {\n      status: 'PDF extractie mislukt',\n      error: 'Geen data ontvangen'\n    }\n  };\n}\n\n// Groepeer chunks per PDF\nconst pdfGroups = {};\npdfData.forEach(chunk => {\n  if (!pdfGroups[chunk.url]) {\n    pdfGroups[chunk.url] = [];\n  }\n  pdfGroups[chunk.url].push(chunk);\n});\n\n// Analyseer elke PDF\nconst pdfAnalyses = [];\n\nObject.entries(pdfGroups).forEach(([url, chunks]) => {\n  // Combineer alle chunks\n  const fullText = chunks\n    .sort((a, b) => a.index - b.index)\n    .map(chunk => chunk.text)\n    .join(' ')\n    .toLowerCase();\n  \n  const analysis = {\n    url: url,\n    naam: url.split('/').pop(),\n    gevondenInfo: {}\n  };\n  \n  // Extract visie\n  const visiePatterns = [\n    /onze\\s+visie[:\\s]+([^.\\n]{20,500})/i,\n    /visie[:\\s]+([^.\\n]{20,500})/i,\n    /wij\\s+geloven[:\\s]+([^.\\n]{20,500})/i\n  ];\n  \n  for (const pattern of visiePatterns) {\n    const match = fullText.match(pattern);\n    if (match) {\n      analysis.gevondenInfo.visie = match[1].trim();\n      break;\n    }\n  }\n  \n  // Extract missie\n  const missiePatterns = [\n    /onze\\s+missie[:\\s]+([^.\\n]{20,500})/i,\n    /missie[:\\s]+([^.\\n]{20,500})/i,\n    /wij\\s+streven[:\\s]+([^.\\n]{20,500})/i\n  ];\n  \n  for (const pattern of missiePatterns) {\n    const match = fullText.match(pattern);\n    if (match) {\n      analysis.gevondenInfo.missie = match[1].trim();\n      break;\n    }\n  }\n  \n  // Extract kernwaarden\n  const kernwaardenMatch = fullText.match(/kernwaarden[:\\s]+([^.\\n]{20,500})/i);\n  if (kernwaardenMatch) {\n    analysis.gevondenInfo.kernwaarden = kernwaardenMatch[1]\n      .split(/[,;]/)\n      .map(v => v.trim())\n      .filter(v => v.length > 2);\n  }\n  \n  // Check opnieuw voor systemen\n  if (!originalResults.systemen.leerlingvolgsysteem) {\n    const lvsMatch = fullText.match(/(parnassys|esis|dotcom|cito.*lovs|boom.*lovs|diataal)/i);\n    if (lvsMatch) {\n      originalResults.systemen.leerlingvolgsysteem = lvsMatch[1];\n      analysis.gevondenInfo.leerlingvolgsysteem = lvsMatch[1];\n    }\n  }\n  \n  if (!originalResults.systemen.administratiesysteem) {\n    const adminMatch = fullText.match(/(magister|som.*today|zermelo|itslearning|google.*workspace|microsoft.*365)/i);\n    if (adminMatch) {\n      originalResults.systemen.administratiesysteem = adminMatch[1];\n      analysis.gevondenInfo.administratiesysteem = adminMatch[1];\n    }\n  }\n  \n  // Tel hoeveel belangrijke info gevonden is\n  analysis.infoScore = Object.keys(analysis.gevondenInfo).length;\n  \n  pdfAnalyses.push(analysis);\n});\n\n// Update originele resultaten met PDF analyse\noriginalResults.pdfAnalysis = {\n  status: 'Succesvol',\n  aantalGeanalyseerd: pdfAnalyses.length,\n  documenten: pdfAnalyses\n};\n\n// Update belangrijke content met PDF info\npdfAnalyses.forEach(pdf => {\n  if (pdf.gevondenInfo.visie) {\n    originalResults.belangrijkeContent.push({\n      type: 'Visie (uit PDF)',\n      content: pdf.gevondenInfo.visie,\n      url: pdf.url\n    });\n  }\n  if (pdf.gevondenInfo.missie) {\n    originalResults.belangrijkeContent.push({\n      type: 'Missie (uit PDF)',\n      content: pdf.gevondenInfo.missie,\n      url: pdf.url\n    });\n  }\n});\n\nreturn originalResults;"
+      },
+      "id": "analyze-pdf-content",
+      "name": "Analyseer PDF Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 200]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "multiplex",
+        "options": {}
+      },
+      "id": "merge-final",
+      "name": "Merge Final Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [2250, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Genereer uitgebreid eindrapport\nconst results = $input.first().json;\nconst processingTime = Date.now() - new Date(results.school.timestamp).getTime();\n\n// Bouw rapport structuur\nconst rapport = {\n  school: {\n    naam: results.school.naam,\n    website: results.school.url,\n    domain: results.school.domain,\n    timestamp: results.school.timestamp\n  },\n  samenvatting: {\n    kwaliteitsscore: results.kwaliteitsscore.totaal,\n    paginasGescraped: results.stats.paginasGescraped,\n    contactenGevonden: results.stats.contactenGevonden,\n    pdfGevonden: results.stats.pdfGevonden\n  },\n  contactgegevens: {\n    emails: results.contactgegevens.emails || [],\n    telefoons: results.contactgegevens.telefoons || []\n  },\n  contactpersonen: results.contactpersonen || [],\n  systemen: results.systemen || {},\n  documenten: results.documenten || [],\n  belangrijkeInformatie: results.belangrijkeContent || [],\n  pdfAnalyse: results.pdfAnalysis || { status: 'Niet uitgevoerd' },\n  meta: {\n    processingTime: `${Math.round(processingTime / 1000)}s`,\n    timestamp: new Date().toISOString()\n  },\n  aanbevelingen: [],\n  technischeDetails: {\n    apifyRuns: {\n      websiteContentCrawler: results.websiteRunId || 'N/A',\n      contactInfoScraper: results.contactRunId || 'N/A'\n    },\n    errors: results.errors || []\n  }\n};\n\n// Voeg aanbevelingen toe op basis van resultaten\nif (!rapport.systemen.leerlingvolgsysteem) {\n  rapport.aanbevelingen.push('Leerlingvolgsysteem niet automatisch gedetecteerd - handmatige verificatie aanbevolen');\n}\n\nif (rapport.contactgegevens.emails.length === 0) {\n  rapport.aanbevelingen.push('Geen email adressen gevonden - controleer contact pagina handmatig');\n}\n\nif (rapport.samenvatting.pdfGevonden === 0) {\n  rapport.aanbevelingen.push('Geen PDF documenten gevonden - mogelijk staan belangrijke documenten achter een login');\n}\n\nif (rapport.samenvatting.kwaliteitsscore < 75) {\n  rapport.aanbevelingen.push('Lage kwaliteitsscore - overweeg handmatige aanvulling van de data');\n}\n\n// Genereer Markdown versie\nconst markdown = `# School Scraping Rapport - ${rapport.school.naam}\n\n## 📊 Samenvatting\n- **Website:** ${rapport.school.website}\n- **Kwaliteitsscore:** ${rapport.samenvatting.kwaliteitsscore}\n- **Verwerkingstijd:** ${rapport.meta.processingTime}\n- **Pagina's gescraped:** ${rapport.samenvatting.paginasGescraped}\n- **Contacten gevonden:** ${rapport.samenvatting.contactenGevonden}\n\n## 📧 Contactgegevens\n### Email adressen\n${rapport.contactgegevens.emails.length > 0 ? rapport.contactgegevens.emails.map(e => `- ${e}`).join('\\n') : '- Geen emails gevonden'}\n\n### Telefoonnummers\n${rapport.contactgegevens.telefoons.length > 0 ? rapport.contactgegevens.telefoons.map(t => `- ${t}`).join('\\n') : '- Geen telefoonnummers gevonden'}\n\n### Contactpersonen\n${rapport.contactpersonen.length > 0 ? rapport.contactpersonen.map(p => `- **${p.naam}** ${p.linkedIn ? `- [LinkedIn](${p.linkedIn})` : ''}`).join('\\n') : '- Geen contactpersonen gevonden'}\n\n## 💻 Systemen\n- **Leerlingvolgsysteem:** ${rapport.systemen.leerlingvolgsysteem || 'Niet gevonden'}\n- **Administratiesysteem:** ${rapport.systemen.administratiesysteem || 'Niet gevonden'}\n\n## 📄 Belangrijke Informatie\n${rapport.belangrijkeInformatie.length > 0 ? rapport.belangrijkeInformatie.map(info => `### ${info.type}\\n${info.content}\\n*Bron: ${info.url}*`).join('\\n\\n') : 'Geen visie/missie informatie gevonden'}\n\n## 📑 Documenten\n${rapport.documenten.length > 0 ? rapport.documenten.map(doc => `- [${doc.naam}](${doc.url})`).join('\\n') : '- Geen documenten gevonden'}\n\n## 🔍 PDF Analyse\nStatus: ${rapport.pdfAnalyse.status}\n${rapport.pdfAnalyse.documenten ? rapport.pdfAnalyse.documenten.map(pdf => `\n### ${pdf.naam}\n- Info score: ${pdf.infoScore}/5\n${Object.entries(pdf.gevondenInfo).map(([key, value]) => `- **${key}:** ${Array.isArray(value) ? value.join(', ') : value}`).join('\\n')}\n`).join('\\n') : ''}\n\n## 💡 Aanbevelingen\n${rapport.aanbevelingen.length > 0 ? rapport.aanbevelingen.map(a => `- ${a}`).join('\\n') : '- Alle belangrijke informatie succesvol gevonden!'}\n\n---\n*Gegenereerd met n8n + Apify School Scraper*`;\n\nreturn {\n  json: rapport,\n  markdown: markdown,\n  binary: {\n    rapport: {\n      data: Buffer.from(JSON.stringify(rapport, null, 2)).toString('base64'),\n      mimeType: 'application/json',\n      fileName: `school-rapport-${rapport.school.naam.replace(/\\s+/g, '-')}.json`\n    },\n    markdownRapport: {\n      data: Buffer.from(markdown).toString('base64'),\n      mimeType: 'text/markdown',\n      fileName: `school-rapport-${rapport.school.naam.replace(/\\s+/g, '-')}.md`\n    }\n  }\n};"
+      },
+      "id": "generate-report",
+      "name": "Genereer Rapport",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2450, 400]
+    }
+  ],
+  "connections": {
+    "webhook-trigger": {
+      "main": [
+        [
+          {
+            "node": "prepare-configs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare-configs": {
+      "main": [
+        [
+          {
+            "node": "apify-website-crawler",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "apify-contact-scraper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "apify-website-crawler": {
+      "main": [
+        [
+          {
+            "node": "process-website-response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "apify-contact-scraper": {
+      "main": [
+        [
+          {
+            "node": "process-contact-response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "process-website-response": {
+      "main": [
+        [
+          {
+            "node": "merge-datasets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "process-contact-response": {
+      "main": [
+        [
+          {
+            "node": "merge-datasets",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "merge-datasets": {
+      "main": [
+        [
+          {
+            "node": "get-website-data",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "get-contact-data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-website-data": {
+      "main": [
+        [
+          {
+            "node": "analyze-all-data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-contact-data": {
+      "main": [
+        [
+          {
+            "node": "analyze-all-data",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "analyze-all-data": {
+      "main": [
+        [
+          {
+            "node": "prepare-pdf-analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare-pdf-analysis": {
+      "main": [
+        [
+          {
+            "node": "if-pdfs-found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "if-pdfs-found": {
+      "main": [
+        [
+          {
+            "node": "apify-pdf-extractor",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "merge-final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "apify-pdf-extractor": {
+      "main": [
+        [
+          {
+            "node": "get-pdf-data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get-pdf-data": {
+      "main": [
+        [
+          {
+            "node": "analyze-pdf-content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "analyze-pdf-content": {
+      "main": [
+        [
+          {
+            "node": "merge-final",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "merge-final": {
+      "main": [
+        [
+          {
+            "node": "generate-report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1.0.0"
+}
