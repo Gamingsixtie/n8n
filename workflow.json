@@ -1,0 +1,48 @@
+{
+  "name": "School Scraper - n8n + Apify Integration (Optimized)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "school-scraper-apify",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook - Start School Scraping",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [250, 300],
+      "webhookId": "school-scraper-apify-webhook",
+      "notes": "Trigger met: {\"url\": \"https://school.nl\", \"schoolNaam\": \"Naam School\"}"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Geoptimaliseerde input validatie en configuratie\nconst input = $input.first().json;\n\n// Valideer vereiste velden\nif (!input.url || !input.schoolNaam) {\n  throw new Error('Vereist: { \"url\": \"https://school.nl\", \"schoolNaam\": \"School Naam\" }');\n}\n\n// Normaliseer en valideer URL\nlet schoolUrl = input.url.trim();\nif (!schoolUrl.startsWith('http')) {\n  schoolUrl = 'https://' + schoolUrl;\n}\n\ntry {\n  new URL(schoolUrl);\n} catch (error) {\n  throw new Error(`Ongeldige URL: ${schoolUrl}`);\n}\n\n// Parse domain en subdomain\nconst urlObj = new URL(schoolUrl);\nconst domain = urlObj.hostname;\nconst protocol = urlObj.protocol;\n\n// Dynamische configuratie op basis van school type\nconst isPrimarySchool = /basisschool|primary|basis/i.test(input.schoolNaam);\nconst isSecondarySchool = /middelbare|voortgezet|secondary|vmbo|havo|vwo/i.test(input.schoolNaam);\n\n// Optimaliseerde Apify configuraties\nconst websiteContentConfig = {\n  startUrls: [{ url: schoolUrl }],\n  crawlerType: \"playwright:firefox\",\n  maxCrawlPages: isPrimarySchool ? 20 : 35, // Meer pagina's voor middelbare scholen\n  saveFiles: true,\n  saveMarkdown: true,\n  saveHtml: false,\n  htmlTransformer: \"readableText\",\n  removeElementsCssSelector: \"nav, footer, .cookie-banner, .modal, #cookie-consent, .advertisement, .social-share\",\n  includeUrlGlobs: [`${protocol}//${domain}/**`],\n  excludeUrlGlobs: [\n    \"*/agenda/*\",\n    \"*/calendar/*\",\n    \"*/nieuws/*\",\n    \"*/blog/*\",\n    \"*/login/*\",\n    \"*/admin/*\",\n    \"*/private/*\"\n  ],\n  maxCrawlDepth: 3,\n  maxRequestRetries: 2,\n  requestTimeoutSecs: 30,\n  proxyConfiguration: {\n    useApifyProxy: true,\n    groups: ['RESIDENTIAL']\n  },\n  // Performance optimalisaties\n  maxConcurrency: 5,\n  maxRequestQueueSize: 100,\n  // Content filtering\n  pageFunction: \"async function pageFunction(context) {\\n    const { $, request, log } = context;\\n    \\n    // Skip pagina's zonder relevante content\\n    const text = $('body').text().toLowerCase();\\n    const relevantKeywords = ['school', 'onderwijs', 'leerling', 'docent', 'visie', 'missie', 'contact', 'team'];\\n    const hasRelevantContent = relevantKeywords.some(keyword => text.includes(keyword));\\n    \\n    if (!hasRelevantContent) {\\n      log.info('Skipping irrelevant page:', request.url);\\n      return null;\\n    }\\n    \\n    return {\\n      url: request.url,\\n      title: $('title').text().trim(),\\n      text: $('body').text().trim(),\\n      markdown: context.markdown,\\n      timestamp: new Date().toISOString()\\n    };\\n  }\"\n};\n\nconst contactInfoConfig = {\n  startUrls: [\n    { url: schoolUrl },\n    { url: `${schoolUrl}/contact` },\n    { url: `${schoolUrl}/team` },\n    { url: `${schoolUrl}/organisatie` },\n    { url: `${schoolUrl}/over-ons` },\n    { url: `${schoolUrl}/medewerkers` },\n    { url: `${schoolUrl}/directie` }\n  ].filter(item => item.url),\n  maxDepth: 2,\n  sameDomain: true,\n  considerChildFrames: false,\n  maxRequestsPerStartUrl: 8,\n  useBrowser: true,\n  maxRequestRetries: 2,\n  requestTimeoutSecs: 20,\n  proxyConfig: {\n    useApifyProxy: true,\n    groups: ['RESIDENTIAL']\n  },\n  // Verbeterde contact extractie\n  extractEmails: true,\n  extractPhones: true,\n  extractLinkedIns: true,\n  extractNames: true,\n  // Custom selectors voor Nederlandse scholen\n  customSelectors: {\n    emailSelectors: ['.email', '[data-email]', '.contact-email'],\n    phoneSelectors: ['.phone', '[data-phone]', '.contact-phone'],\n    nameSelectors: ['.name', '.contact-name', '.team-member-name']\n  }\n};\n\n// Tracking data met verbeterde structuur\nconst trackingData = {\n  schoolNaam: input.schoolNaam,\n  schoolUrl: schoolUrl,\n  domain: domain,\n  protocol: protocol,\n  timestamp: new Date().toISOString(),\n  apifyToken: $env.APIFY_TOKEN || 'YOUR_APIFY_TOKEN_HERE',\n  schoolType: {\n    isPrimary: isPrimarySchool,\n    isSecondary: isSecondarySchool,\n    type: isPrimarySchool ? 'basisschool' : isSecondarySchool ? 'middelbare school' : 'onbekend'\n  },\n  results: {\n    websiteContent: null,\n    contactInfo: null,\n    pdfAnalysis: null\n  },\n  errors: [],\n  performance: {\n    startTime: Date.now(),\n    steps: {}\n  }\n};\n\nreturn {\n  trackingData,\n  websiteContentConfig,\n  contactInfoConfig,\n  // Extra metadata voor debugging\n  metadata: {\n    userAgent: 'n8n-school-scraper/1.0',\n    version: '1.0.0',\n    environment: $env.NODE_ENV || 'production'\n  }\n};"
+      },
+      "id": "prepare-configs",
+      "name": "Voorbereid Apify Configuraties (Optimized)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    }
+  ],
+  "connections": {
+    "webhook-trigger": {
+      "main": [
+        [
+          {
+            "node": "prepare-configs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1.0.0"
+}
