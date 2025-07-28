@@ -1,0 +1,153 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// Extract PDF URLs from Firecrawl response\nconst item = $input.all()[0].json;\nconst data = item.data || item;\nconst markdown = data.markdown || '';\nconst html = data.html || '';\nconst baseUrl = data.url || item.url;\n\n// Find all PDF links\nconst pdfUrls = new Set();\n\n// From HTML content\nconst htmlPdfPattern = /href=[\"']([^\"']*\\.pdf[^\"']*)[\"']/gi;\nlet match;\nwhile ((match = htmlPdfPattern.exec(html)) !== null) {\n  let pdfUrl = match[1];\n  if (!pdfUrl.startsWith('http')) {\n    try {\n      const base = new URL(baseUrl);\n      pdfUrl = new URL(pdfUrl, base).href;\n    } catch (e) {\n      continue;\n    }\n  }\n  pdfUrls.add(pdfUrl);\n}\n\n// From Markdown content  \nconst mdPdfPattern = /\\[([^\\]]*)\\]\\(([^)]*\\.pdf[^)]*)\\)/gi;\nwhile ((match = mdPdfPattern.exec(markdown)) !== null) {\n  let pdfUrl = match[2];\n  if (!pdfUrl.startsWith('http')) {\n    try {\n      const base = new URL(baseUrl);\n      pdfUrl = new URL(pdfUrl, base).href;\n    } catch (e) {\n      continue;\n    }\n  }\n  pdfUrls.add(pdfUrl);\n}\n\n// Prioritize important PDFs\nconst priorityKeywords = ['schoolgids', 'jaarplan', 'schoolplan', 'informatie', 'brochure'];\nconst sortedPdfUrls = Array.from(pdfUrls).sort((a, b) => {\n  const aPriority = priorityKeywords.some(kw => a.toLowerCase().includes(kw));\n  const bPriority = priorityKeywords.some(kw => b.toLowerCase().includes(kw));\n  if (aPriority && !bPriority) return -1;\n  if (!aPriority && bPriority) return 1;\n  return 0;\n});\n\n// Limit to first 5 PDFs\nconst limitedPdfUrls = sortedPdfUrls.slice(0, 5);\n\n// Return both website data and PDF URLs\nreturn [{\n  json: {\n    websiteData: data,\n    pdfUrls: limitedPdfUrls,\n    hasPDFs: limitedPdfUrls.length > 0,\n    pdfCount: limitedPdfUrls.length,\n    baseUrl: baseUrl\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2672,
+        4272
+      ],
+      "id": "d3366e8b-5f8c-482c-857c-1c9a5b21cb30",
+      "name": "Extract PDF URLs1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.hasPDFs }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -2480,
+        4272
+      ],
+      "id": "d71902c6-fbed-4a5a-ab26-d01866cf82ed",
+      "name": "Has PDFs?1"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "pdfUrls",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        -2272,
+        4416
+      ],
+      "id": "4e293305-088d-4297-a41a-070d7a49171d",
+      "name": "Split PDF URLs1"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pass through website data when no PDFs found\nconst websiteData = $json.websiteData;\n\nreturn [{\n  json: {\n    allPdfContent: [],\n    processedPdfUrls: [],\n    websiteData: websiteData,\n    noPdfsFound: true\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2272,
+        4112
+      ],
+      "id": "5cb2fef0-de16-4c54-82cd-a01097121982",
+      "name": "No PDFs Handler1"
+    },
+    {
+      "parameters": {
+        "operation": "extract",
+        "urls": {
+          "items": [
+            {
+              "url": "={{ $json.chatInput }}"
+            }
+          ]
+        },
+        "prompt": "=Extract contact persons including their name, role, and email. Identify the student tracking system and student administration system used. Describe the method of teaching children, as well as the vision and mission of the institution. Provide the URL of any PDF documents found during the search.  - Use your knowledge to interpret educational methods (e.g., digitally supported education, Jenaplan, Montessori, traditional methods). - Recognize standard Student Tracking Systems (CITO, IEP, DIA, BOOM) and Student Administration Systems (ParnasSys, ACES), explicitly ensuring they match typical known systems. - **Analyze the full content of any PDF files linked or found on the website. Extract relevant information from the PDF files (such as contact details, educational methodology, student tracking systems, or administration systems) and always return the direct URL to each PDF file ",
+        "schema": "={\n  \"type\": \"object\",\n  \"properties\": {\n    \"contactPersons\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"name\": { \"type\": \"string\" },\n          \"role\": { \"type\": \"string\" },\n          \"email\": { \"type\": \"string\" }\n        },\n        \"required\": [\"name\", \"role\"]\n      }\n    },\n    \"studentTrackingSystem\": {\n      \"type\": \"string\",\n      \"description\": \"The student tracking system used (e.g., CITO, IEP, DIA, BOOM)\"\n    },\n    \"studentAdministrationSystem\": {\n      \"type\": \"string\",\n      \"description\": \"The student administration system used (e.g., ParnasSys, ACES)\"\n    },\n    \"teachingMethod\": {\n      \"type\": \"string\",\n      \"description\": \"Description of the teaching method and educational approach\"\n    },\n    \"vision\": {\n      \"type\": \"string\",\n      \"description\": \"The institution's vision statement\"\n    },\n    \"mission\": {\n      \"type\": \"string\",\n      \"description\": \"The institution's mission statement\"\n    },\n    \"pdfUrls\": {\n      \"type\": \"array\",\n      \"items\": { \"type\": \"string\" },\n      \"description\": \"URLs of PDF documents found on the website\"\n    },\n    \"websiteUrl\": {\n      \"type\": \"string\",\n      \"description\": \"The base URL of the website being analyzed\"\n    }\n  },\n  \"required\": [\"websiteUrl\"]\n}",
+        "includeSubdomains": true,
+        "enableWebSearch": true,
+        "showSources": true,
+        "requestOptions": {}
+      },
+      "type": "@mendable/n8n-nodes-firecrawl.firecrawl",
+      "typeVersion": 1,
+      "position": [
+        -2880,
+        4272
+      ],
+      "id": "8d515578-08cf-4b54-b709-382aeb42efea",
+      "name": "Extract Data1",
+      "credentials": {
+        "firecrawlApi": {
+          "id": "A5riX6P2eUYZGRAG",
+          "name": "Firecrawl account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Extract PDF URLs1": {
+      "main": [
+        [
+          {
+            "node": "Has PDFs?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has PDFs?1": {
+      "main": [
+        [
+          {
+            "node": "Split PDF URLs1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No PDFs Handler1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split PDF URLs1": {
+      "main": [
+        []
+      ]
+    },
+    "No PDFs Handler1": {
+      "main": [
+        []
+      ]
+    },
+    "Extract Data1": {
+      "main": [
+        [
+          {
+            "node": "Extract PDF URLs1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "520f3424a922b9043d157caa178c75f0e42bf706e0932035134095ad7986f43e"
+  }
+}
